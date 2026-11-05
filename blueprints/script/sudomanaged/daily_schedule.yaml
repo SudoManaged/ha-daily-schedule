@@ -1,0 +1,323 @@
+blueprint:
+  name: Daily schedule (several calendars)
+  description: >-
+    Builds the schedule for today (or tomorrow) from one or more calendars as one list sorted by time: one line per
+    appointment with its time, title, a short label for its calendar and its location; all-day events first; an
+    appointment that is on two calendars shown once, with both labels. Sends it to a notify action if you choose
+    one, and always returns it, so a morning briefing or any automation can use it.
+
+
+    Works with any calendar in Home Assistant: Outlook and other published calendar links (Remote Calendar),
+    Google Calendar, CalDAV (iCloud and others) and Local Calendar. The calendars are refreshed first, because
+    Remote Calendar on its own reads its link only once a day. Each calendar is read on its own, and one that
+    cannot be read is named as unavailable instead of being left out silently.
+  domain: script
+  source_url: https://github.com/SudoManaged/ha-daily-schedule/blob/main/blueprints/script/sudomanaged/daily_schedule.yaml
+  author: SudoManaged
+  homeassistant:
+    min_version: 2025.4.0
+  input:
+    calendars_section:
+      name: Calendars
+      icon: mdi:calendar-multiple
+      input:
+        calendars:
+          name: Calendars
+          description: The calendars to read. Their order is the order of the labels below.
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: calendar
+        labels:
+          name: Labels
+          description: >-
+            Optional short labels for the calendars, in the same order, separated by commas (for example
+            `Work, Home, Club`). A calendar without a label shows no label. Leave empty for no labels.
+          default: ""
+          selector:
+            text:
+        day:
+          name: Day
+          default: today
+          selector:
+            select:
+              options:
+                - label: Today
+                  value: today
+                - label: Tomorrow
+                  value: tomorrow
+        refresh:
+          name: Refresh the calendars first
+          description: >-
+            Asks each calendar for its latest events before reading them. Keep this on for Remote Calendar (Outlook
+            and other calendar links), which on its own reads its link only once a day.
+          default: true
+          selector:
+            boolean:
+    sending_section:
+      name: Sending
+      icon: mdi:message-text
+      input:
+        notify_action:
+          name: Notify action
+          description: >-
+            Where to send the schedule, for example `notify.mobile_app_my_phone`, or a script of your own that takes
+            `title` and `message`. Notify entities (`notify.send_message`) are not supported. Leave empty to only
+            return it (for use in your own automation or briefing).
+          default: ""
+          selector:
+            text:
+        title:
+          name: Notification title
+          description: Leave empty for "Today's schedule" or "Tomorrow's schedule".
+          default: ""
+          selector:
+            text:
+        skip_empty:
+          name: Send nothing on a free day
+          description: Do not send a notification when there is nothing scheduled (and every calendar could be read).
+          default: false
+          selector:
+            boolean:
+    format_section:
+      name: Format and wording
+      icon: mdi:format-list-bulleted
+      collapsed: true
+      input:
+        time_format:
+          name: Time format
+          default: "12"
+          selector:
+            select:
+              options:
+                - label: 12-hour (9:00 AM)
+                  value: "12"
+                - label: 24-hour (09:00)
+                  value: "24"
+        location_length:
+          name: Longest location
+          description: Longer locations are cut to this many characters, followed by "...". 0 shows no locations.
+          default: 70
+          selector:
+            number:
+              min: 0
+              max: 300
+              mode: box
+        shorten_links:
+          name: Shorten online meetings
+          description: >-
+            Shows "Teams", "Zoom", "Google Meet" or "Webex" instead of a meeting link or long meeting text. A room
+            given together with an online meeting stays ("Room 4, Teams").
+          default: true
+          selector:
+            boolean:
+        hide_cancelled:
+          name: Hide cancelled meetings
+          description: >-
+            Hides events whose title starts with "Canceled:" or "Cancelled:", which is how Outlook marks a meeting
+            the organizer called off.
+          default: true
+          selector:
+            boolean:
+        heading:
+          name: Heading
+          description: The first line. Leave empty for "Today:" or "Tomorrow:".
+          default: ""
+          selector:
+            text:
+        nothing_text:
+          name: Text for a free day
+          default: nothing scheduled.
+          selector:
+            text:
+        all_day_text:
+          name: Word for all-day events
+          default: All day
+          selector:
+            text:
+        until_text:
+          name: Word for events still running from the day before
+          default: Until
+          selector:
+            text:
+        unavailable_text:
+          name: Text for a calendar that cannot be read
+          default: calendar unavailable
+          selector:
+            text:
+mode: parallel
+max: 10
+sequence:
+  - variables:
+      calendars: !input calendars
+      labels: !input labels
+      day: !input day
+      refresh: !input refresh
+      notify_action: !input notify_action
+      title: !input title
+      skip_empty: !input skip_empty
+      time_format: !input time_format
+      location_length: !input location_length
+      shorten_links: !input shorten_links
+      hide_cancelled: !input hide_cancelled
+      heading: !input heading
+      nothing_text: !input nothing_text
+      all_day_text: !input all_day_text
+      until_text: !input until_text
+      unavailable_text: !input unavailable_text
+      cal_list: "{{ [calendars] if calendars is string else (calendars | list) }}"
+      # A value that looks like a number or list (a label "1, 2") arrives converted; turn it back into labels.
+      label_list: >-
+        {{ ((labels if labels is iterable and labels is not string and labels is not mapping
+             else (labels | string).split(',')) | map('string') | map('trim') | list)
+           if labels | string | trim else [] }}
+      offset: "{{ 1 if day == 'tomorrow' else 0 }}"
+      # Local midnight to midnight; adding days keeps the wall clock, so days with a clock change are right too.
+      day_start: "{{ (today_at('00:00') + timedelta(days=offset)).isoformat() }}"
+      day_end: "{{ (today_at('00:00') + timedelta(days=offset + 1)).isoformat() }}"
+      answer: {}
+      one: {}
+  - if:
+      - condition: template
+        value_template: "{{ refresh }}"
+    then:
+      - action: homeassistant.update_entity
+        target:
+          entity_id: "{{ cal_list }}"
+        continue_on_error: true
+  # Events that overlap the day, one calendar at a time: when several calendars are read in one call, one failing
+  # calendar loses the answer for all of them. A calendar that cannot be read stays out of the answer and is
+  # reported as unavailable below. (Assigning to answer inside the loop needs Home Assistant 2025.4 or newer.)
+  - repeat:
+      for_each: "{{ cal_list }}"
+      sequence:
+        - variables:
+            one: {}
+        - action: calendar.get_events
+          target:
+            entity_id: "{{ repeat.item }}"
+          data:
+            start_date_time: "{{ day_start }}"
+            end_date_time: "{{ day_end }}"
+          response_variable: one
+          continue_on_error: true
+        - if:
+            - condition: template
+              value_template: "{{ one is mapping and repeat.item in one }}"
+          then:
+            # Keep only what the list uses: descriptions (whole invites, even email threads) could push the
+            # answer past Home Assistant's limit on a template's output.
+            - variables:
+                answer: >-
+                  {%- set ns = namespace(events=[]) %}
+                  {%- for e in one[repeat.item].events | default([]) %}
+                    {%- set ns.events = ns.events + [{'summary': e.get('summary'), 'location': e.get('location'),
+                          'start': e.get('start'), 'end': e.get('end')}] %}
+                  {%- endfor %}
+                  {{- dict(answer, **{repeat.item: {'events': ns.events}}) }}
+  - variables:
+      # One row per event per calendar: what to show, how to sort it and how to recognise the same appointment on
+      # another calendar (same start and title).
+      rows: >-
+        {%- set d0 = as_datetime(day_start) %}{% set d1 = as_datetime(day_end) %}
+        {%- set tf = '%H:%M' if time_format | string == '24' else '%-I:%M %p' %}
+        {%- set cap = location_length | int(70) %}
+        {%- set ns = namespace(rows=[]) %}
+        {%- for cal in cal_list %}
+          {%- set label = label_list[loop.index0] if loop.index0 < label_list | length else '' %}
+          {%- for e in (answer[cal].events if cal in answer and answer[cal].events is defined else []) %}
+            {%- set title = (e.get('summary') or '') | trim %}
+            {%- set title = title if title else 'Untitled' %}
+            {%- if not (hide_cancelled and title is match('(?i)cancell?ed:')) %}
+              {%- set raw = (e.get('location') or '') | replace('\r', ' ') | replace('\n', ' ') | trim %}
+              {%- set lns = namespace(parts=[]) %}
+              {%- for part in (raw.split(';') if shorten_links else [raw]) %}
+                {%- set p = part | trim %}{% set low = p | lower %}
+                {%- if shorten_links and ('teams.microsoft.com' in low or 'teams.live.com' in low
+                      or 'microsoft teams' in low) %}{% set p = 'Teams' %}
+                {%- elif shorten_links and ('zoom.us' in low or 'zoom meeting' in low) %}{% set p = 'Zoom' %}
+                {%- elif shorten_links and 'meet.google.com' in low %}{% set p = 'Google Meet' %}
+                {%- elif shorten_links and 'webex.com' in low %}{% set p = 'Webex' %}{% endif %}
+                {%- if p and p not in lns.parts %}{% set lns.parts = lns.parts + [p] %}{% endif %}
+              {%- endfor %}
+              {%- set full = lns.parts | join(', ') %}
+              {%- if cap <= 0 or not full %}{% set loc = '' %}
+              {%- elif full | length > cap %}{% set loc = full[:cap] | trim ~ '...' %}
+              {%- else %}{% set loc = full %}{% endif %}
+              {%- set start = e.get('start') | string %}
+              {%- if 'T' in start %}
+                {%- set s = as_datetime(start) | as_local %}{% set en = as_datetime(e.get('end') | string) | as_local %}
+                {%- if s <= d0 and en >= d1 %}
+                  {%- set kind, time, sort = 'allday', '', '0' ~ (title | lower) %}
+                {%- elif s < d0 %}
+                  {%- set kind, time, sort = 'until', en.strftime(tf), '1' ~ '%012d' | format(as_timestamp(en) | int) %}
+                {%- else %}
+                  {%- set kind, time, sort = 'timed', s.strftime(tf), '2' ~ '%012d' | format(as_timestamp(s) | int) %}
+                {%- endif %}
+              {%- else %}
+                {%- set kind, time, sort = 'allday', '', '0' ~ (title | lower) %}
+              {%- endif %}
+              {%- set moment = '%012d' | format(as_timestamp(start) | int) if 'T' in start else start %}
+              {%- set ns.rows = ns.rows + [{'key': moment ~ '|' ~ (title | lower), 'sort': sort, 'kind': kind,
+                    'time': time, 'title': title, 'label': label, 'location': loc, 'calendar': cal,
+                    'start': start, 'end': e.get('end') | string}] %}
+            {%- endif %}
+          {%- endfor %}
+        {%- endfor %}
+        {{- ns.rows }}
+      # The same appointment on several calendars becomes one item with every label that has one.
+      items: >-
+        {%- set ns = namespace(items=[], keys=[]) %}
+        {%- for r in rows | sort(attribute='sort') %}
+          {%- if r.key not in ns.keys %}
+            {%- set ns.keys = ns.keys + [r.key] %}
+            {%- set same = rows | selectattr('key', 'eq', r.key) | list %}
+            {%- set ns.items = ns.items + [{'kind': r.kind, 'time': r.time, 'title': r.title,
+                  'labels': same | map(attribute='label') | select | unique | list,
+                  'location': same | map(attribute='location') | select | first | default(''),
+                  'calendars': same | map(attribute='calendar') | unique | list,
+                  'start': r.start, 'end': r.end}] %}
+          {%- endif %}
+        {%- endfor %}
+        {{- ns.items }}
+      unavailable: >-
+        {%- set ns = namespace(names=[]) %}
+        {%- for cal in cal_list if cal not in answer %}
+          {%- set label = label_list[cal_list.index(cal)] if cal_list.index(cal) < label_list | length else '' %}
+          {%- set ns.names = ns.names + [label or state_attr(cal, 'friendly_name') or cal] %}
+        {%- endfor %}
+        {{- ns.names }}
+      lines: >-
+        {%- set ns = namespace(lines=[]) %}
+        {%- for i in items %}
+          {%- set tail = ((' (' ~ i.labels | join(', ') ~ ')') if i.labels else '')
+                ~ ((', ' ~ i.location) if i.location else '') %}
+          {%- if i.kind == 'allday' %}{% set line = all_day_text ~ ': ' ~ i.title ~ tail %}
+          {%- elif i.kind == 'until' %}{% set line = until_text ~ ' ' ~ i.time ~ ' ' ~ i.title ~ tail %}
+          {%- else %}{% set line = i.time ~ ' ' ~ i.title ~ tail %}{% endif %}
+          {%- set ns.lines = ns.lines + [line] %}
+        {%- endfor %}
+        {%- for n in unavailable %}{% set ns.lines = ns.lines + [n ~ ': ' ~ unavailable_text] %}{% endfor %}
+        {{- ns.lines }}
+      head: "{{ heading if heading | trim else ('Tomorrow:' if offset == 1 else 'Today:') }}"
+      message: "{{ ('• ' ~ lines | join('\n• ')) if lines else nothing_text }}"
+      text: "{{ head ~ ('\n' ~ message if lines else ' ' ~ nothing_text) }}"
+      result: >-
+        {{ {'text': text, 'message': message, 'count': items | length, 'items': items, 'unavailable': unavailable,
+            'day': (day_start | as_datetime).date() | string} }}
+  # A failure while sending (for example a phone that cannot be reached) does not lose the result. A notify
+  # action that does not exist, or rejects the message, still stops the script: that is a setup error.
+  - if:
+      - condition: template
+        value_template: >-
+          {{ notify_action | trim != '' and not (skip_empty and result['count'] == 0 and not result['unavailable']) }}
+    then:
+      - action: "{{ notify_action | trim }}"
+        continue_on_error: true
+        data:
+          title: >-
+            {{ title if title | trim else ("Tomorrow's schedule" if offset == 1 else "Today's schedule") }}
+          message: "{{ result['message'] }}"
+  - stop: Schedule ready
+    response_variable: result

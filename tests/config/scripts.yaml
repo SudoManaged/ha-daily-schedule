@@ -1,0 +1,20 @@
+test_daily_schedule:
+  alias: Test daily schedule
+  use_blueprint:
+    path: sudomanaged/daily_schedule.yaml
+    input:
+      calendars:
+        - calendar.work
+        - calendar.home
+      labels: "Work, Home"
+      notify_action: notify.persistent_notification
+test_daily_schedule_tomorrow:
+  alias: Test daily schedule tomorrow
+  use_blueprint:
+    path: sudomanaged/daily_schedule.yaml
+    input:
+      calendars:
+        - calendar.work
+      day: tomorrow
+      time_format: "24"
+      location_length: 0
